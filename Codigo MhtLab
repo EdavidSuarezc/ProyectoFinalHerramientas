@@ -1,0 +1,138 @@
+function mainInterfazTemperaturaHumedad()
+    % Define el ID del canal y las claves de API
+    channelID = 2599568;
+    writeAPIKey = '30FVCF91NQWVCJGI'; % Clave de escritura de API de ThingSpeak
+    readAPIKey = '532BDFLLLSJHHTD5';  % Clave de lectura de API de ThingSpeak
+
+    % Crea la figura y los componentes para la UI
+    fig = uifigure('Name', 'Temperatura y Humedad');
+    tempLabel = uilabel(fig, 'Position', [20, 350, 300, 40], 'FontSize', 18);
+    humLabel = uilabel(fig, 'Position', [20, 300, 300, 40], 'FontSize', 18);
+
+    % Crea los ejes para la gráfica
+    ax = uiaxes(fig, 'Position', [350, 150, 400, 300]);
+    title(ax, 'Datos de Temperatura y Humedad');
+    xlabel(ax, 'Tiempo');
+    ylabel(ax, 'Valores');
+    legend(ax, {'Temperatura (°C)', 'Humedad (%)'});
+
+    % Crea la tabla para mostrar los datos
+    table = uitable(fig, 'Position', [20, 50, 300, 200]);
+    table.ColumnName = {'Tiempo', 'Temperatura (°C)', 'Humedad (%)'};
+    table.ColumnWidth = {120, 100, 100};
+
+    % Crea los botones para controlar el LED
+    btnOn = uibutton(fig, 'push', 'Text', 'Encender LED', 'Position', [20, 250, 100, 30], 'FontSize', 12);
+    btnOff = uibutton(fig, 'push', 'Text', 'Apagar LED', 'Position', [140, 250, 100, 30], 'FontSize', 12);
+    btnOn.ButtonPushedFcn = @(btn, event) controlarLED(true, writeAPIKey, channelID, fig);
+    btnOff.ButtonPushedFcn = @(btn, event) controlarLED(false, writeAPIKey, channelID, fig);
+
+    % Almacena los datos en la aplicación
+    appData.timeData = [];
+    appData.tempData = [];
+    appData.humidityData = [];
+    appData.tempLabel = tempLabel;
+    appData.humLabel = humLabel;
+    appData.ax = ax;
+    appData.table = table;
+    appData.channelID = channelID;
+    appData.writeAPIKey = writeAPIKey;
+    appData.readAPIKey = readAPIKey;
+    appData.lastLEDControlTime = datetime('now') - seconds(16); % Evita solicitudes iniciales frecuentes
+
+    % Crea el temporizador para actualizar los datos automáticamente
+    t = timer('ExecutionMode', 'fixedRate', 'Period', 20, ... % Actualiza cada 20 segundos
+        'TimerFcn', @(~, ~) updateData(fig));
+
+    % Almacena el temporizador en la aplicación
+    appData.timer = t;
+    fig.UserData = appData;
+
+    % Inicia el temporizador
+    start(t);
+
+    % Define una función para cerrar la aplicación y detener el temporizador
+    fig.CloseRequestFcn = @(~, ~) closeApp(fig);
+end
+
+% Función para actualizar los datos
+function updateData(fig)
+    % Recupera los datos de la aplicación
+    appData = fig.UserData;
+
+    % Lee los últimos datos disponibles en el canal ThingSpeak
+    [data, timestamps] = thingSpeakRead(appData.channelID, 'Fields', [1, 2], 'NumPoints', 1, 'ReadKey', appData.readAPIKey);
+
+    % Si hay datos disponibles, procesarlos
+    if ~isempty(data)
+        % Agregar nuevos datos a las listas
+        appData.timeData = [appData.timeData; timestamps];
+        appData.tempData = [appData.tempData; data(:, 1)];
+        appData.humidityData = [appData.humidityData; data(:, 2)];
+
+        % Limitar el tamaño de las listas a 100 puntos
+        if length(appData.timeData) > 100
+            appData.timeData = appData.timeData(end-99:end);
+            appData.tempData = appData.tempData(end-99:end);
+            appData.humidityData = appData.humidityData(end-99:end);
+        end
+
+        % Actualiza las etiquetas de temperatura y humedad con el último valor
+        appData.tempLabel.Text = sprintf('Temperatura: %.2f °C', appData.tempData(end));
+        appData.humLabel.Text = sprintf('Humedad: %.2f %%', appData.humidityData(end));
+
+        % Grafica los datos en tiempo real
+        plot(appData.ax, appData.timeData, appData.tempData, '-o', 'DisplayName', 'Temperatura (°C)');
+        hold(appData.ax, 'on');
+        plot(appData.ax, appData.timeData, appData.humidityData, '-x', 'DisplayName', 'Humedad (%)');
+        hold(appData.ax, 'off');
+        legend(appData.ax, 'show');
+
+        % Actualiza la tabla con todos los datos
+        appData.table.Data = [cellstr(datestr(appData.timeData)), num2cell(appData.tempData), num2cell(appData.humidityData)];
+    else
+        appData.tempLabel.Text = 'Error al leer los datos';
+        appData.humLabel.Text = '';
+        appData.table.Data = {};
+    end
+
+    % Actualiza los datos de la aplicación
+    fig.UserData = appData;
+end
+
+% Función para controlar el LED
+function controlarLED(turnOn, writeAPIKey, channelID, fig)
+    % Recupera los datos de la aplicación
+    appData = fig.UserData;
+    currentTime = datetime('now');
+    timeSinceLastControl = seconds(currentTime - appData.lastLEDControlTime);
+    
+    % Verifica si han pasado al menos 10 segundos desde la última solicitud
+    if timeSinceLastControl >= 10
+        if turnOn
+            % Enciende el LED
+            thingSpeakWrite(channelID, 'Fields', 3, 'Values', 1, 'WriteKey', writeAPIKey);
+            disp('LED Encendido');
+        else
+            % Apaga el LED
+            thingSpeakWrite(channelID, 'Fields', 3, 'Values', 0, 'WriteKey', writeAPIKey);
+            disp('LED Apagado');
+        end
+        % Actualiza el tiempo de la última solicitud de control del LED
+        appData.lastLEDControlTime = currentTime;
+        fig.UserData = appData;
+    else
+        disp('Requests are too frequent. Please wait before trying again.');
+    end
+end
+
+% Función para cerrar la aplicación y detener el temporizador
+function closeApp(fig)
+    appData = fig.UserData;
+    stop(appData.timer);
+    delete(appData.timer);
+    delete(fig);
+end
+
+% Llama a la función para crear la interfaz gráfica
+mainInterfazTemperaturaHumedad();
