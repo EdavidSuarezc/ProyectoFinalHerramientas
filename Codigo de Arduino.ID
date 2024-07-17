@@ -1,0 +1,137 @@
+/* Incluimos las librerías necesarias */
+#include <WiFi.h>
+#include <ThingSpeak.h>
+#include "DHT.h"
+
+/* Definimos el pin de datos del sensor conectado al pin 10 del ESP32 */
+#define DHTPIN  10
+/* Definimos el tipo de sensor como DHT11 */
+#define DHTTYPE DHT11 
+
+/* Inicializamos el sensor DHT */
+DHT dht(DHTPIN, DHTTYPE);
+
+/* Definimos las credenciales de la red WiFi */
+const char* ssid = "DAVID_2";
+const char* password = "david1104";
+
+/* Definimos las credenciales de la plataforma ThingSpeak */
+unsigned long channelID = 2599568;
+const char* WriteAPIKey = "30FVCF91NQWVCJGI";
+const char* ReadAPIKey = "532BDFLLLSJHHTD5";
+
+/* Cliente WiFi y estado del LED */
+WiFiClient cliente;
+#define LED_PIN 13
+bool automaticControl = true;
+bool ledManual = false;
+const unsigned long minManualControlInterval = 16000;
+unsigned long lastManualControlTime = 0;
+
+/* Función de configuración */
+void setup() {
+  Serial.begin(115200); // Iniciamos el puerto serial
+  delay(1000);
+
+  dht.begin(); // Iniciamos el sensor DHT
+
+  /* Conexión a la red WiFi */
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("Conectado al WiFi");
+
+  ThingSpeak.begin(cliente); // Iniciamos ThingSpeak
+
+  pinMode(LED_PIN, OUTPUT); // Configuramos el pin del LED como salida
+  digitalWrite(LED_PIN, LOW); // Apagamos el LED inicialmente
+  delay(5000); // Esperamos 5 segundos
+}
+
+/* Función principal de loop */
+void loop() {
+  delay(5000); // Retardo de 5 segundos
+  medicion(); // Llamamos a la función para realizar mediciones
+  ThingSpeak.writeFields(channelID, WriteAPIKey); // Enviamos los datos a ThingSpeak
+  Serial.println("Datos enviados a ThingSpeak!");
+  delay(10000); // Retardo de 10 segundos
+  verificarComandoRemoto(); // Verificamos comandos remotos desde ThingSpeak
+}
+
+/* Función para realizar mediciones de temperatura y humedad */
+void medicion() {
+  float temperatura = dht.readTemperature(); // Leemos la temperatura
+  float humedad = dht.readHumidity(); // Leemos la humedad
+
+  Serial.print("Temperatura: ");
+  Serial.print(temperatura);
+  Serial.println(" °C");
+  Serial.print("Humedad: ");
+  Serial.print(humedad);
+  Serial.println(" %");
+  Serial.println("-----------------------------------------");
+
+  ThingSpeak.setField(1, temperatura); // Configuramos el campo 1 de ThingSpeak con la temperatura
+  ThingSpeak.setField(2, humedad); // Configuramos el campo 2 de ThingSpeak con la humedad
+
+  // Control automático del LED basado en la temperatura
+  if (automaticControl && !ledManual) {
+    if (temperatura >= 25.0) {
+      digitalWrite(LED_PIN, HIGH); // Encendemos el LED
+      Serial.println("LED encendido automáticamente");
+    } else {
+      digitalWrite(LED_PIN, LOW); // Apagamos el LED
+      Serial.println("LED apagado automáticamente");
+    }
+  }
+}
+
+/* Función para verificar comandos remotos desde ThingSpeak */
+void verificarComandoRemoto() {
+  long ledState = ThingSpeak.readLongField(channelID, 3, ReadAPIKey); // Leemos el estado del LED desde ThingSpeak
+
+  if (ledState != -1) {
+    if (ledState == 0) {
+      // Enciende el modo de encendido automático
+      automaticControl = true;
+      ledManual = false; // Desactiva el modo manual
+      digitalWrite(LED_PIN, LOW); // Aseguramos que el LED esté apagado
+      Serial.println("Modo de encendido automático activado desde ThingSpeak");
+    } else if (ledState == 1) {
+      // Apaga el modo de encendido automático
+      automaticControl = false;
+      digitalWrite(LED_PIN, HIGH); // Encendemos el LED
+      ledManual = true; // Activa el modo manual
+      Serial.println("Modo de encendido automático desactivado desde ThingSpeak");
+    }
+  }
+}
+
+/* Función para controlar el LED manualmente */
+void controlarLED(bool turnOn) {
+  unsigned long currentTime = millis();
+  
+  // Verificar el tiempo desde el último control manual
+  if (currentTime - lastManualControlTime >= minManualControlInterval) {
+    if (turnOn) {
+      // Encender el LED
+      digitalWrite(LED_PIN, HIGH);
+      Serial.println("LED encendido manualmente");
+      ledManual = true; // Activar modo manual
+      automaticControl = false; // Desactivar control automático
+    } else {
+      // Apagar el LED
+      digitalWrite(LED_PIN, LOW);
+      Serial.println("LED apagado manualmente");
+      ledManual = false; // Desactivar modo manual
+      automaticControl = true; // Activar control automático
+    }
+    
+    // Actualizar el tiempo del último control manual
+    lastManualControlTime = currentTime;
+  } else {
+    Serial.println("Solicitud demasiado frecuente. Por favor espere antes de intentarlo de nuevo.");
+  }
+}
